@@ -1,9 +1,10 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import oracledb from 'oracledb';
 import {
   resolveOracleConnectOptions,
   formatOracleLocalDate,
   oracleFetchTypeHandler,
+  normalizeOracleStatement,
 } from '../src/oracle.js';
 import { buildListTablesQuery, buildSchemaQuery, getTestQuery } from '../src/utils.js';
 import { DatabaseConnection } from '../src/types.js';
@@ -189,5 +190,44 @@ describe('Oracle metadata queries', () => {
     const query = buildSchemaQuery('oracle_thin', 'hr.employees');
     expect(query).toContain("c.owner = UPPER('hr')");
     expect(query).toContain("UPPER('employees')");
+  });
+});
+
+describe('Oracle execution', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('removes SQL delimiters and preserves PL/SQL terminators', () => {
+    expect(normalizeOracleStatement('SELECT 1 FROM dual;  ')).toBe('SELECT 1 FROM dual');
+    expect(normalizeOracleStatement('BEGIN NULL; END;\n/')).toBe('BEGIN NULL; END;');
+    expect(normalizeOracleStatement('SELECT 1 FROM dual; DROP TABLE users;')).toBe(
+      'SELECT 1 FROM dual; DROP TABLE users'
+    );
+  });
+
+  it('rejects TNS aliases that would bypass the SSH tunnel', () => {
+    const connection = oracleConnection(
+      { sshTunnel: { enabled: true, host: 'bastion', port: 22 } },
+      { '@dbeaver-connection-type@': 'TNS' }
+    );
+    expect(() => resolveOracleConnectOptions(connection, '127.0.0.1', 40000)).toThrow(/SSH tunnel/);
+  });
+
+  it('caps the fetch, normalizes SQL, and closes the session after an error', async () => {
+    const { WorkspaceClient } = await import('../src/workspace-client.js');
+    const execute = vi.fn().mockRejectedValue(new Error('ORA-00942'));
+    const close = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(oracledb, 'getConnection').mockResolvedValue({ execute, close } as never);
+    const client = new WorkspaceClient();
+    await expect(
+      client.executeQuery(oracleConnection({ user: 'app' }), 'SELECT * FROM missing;', {
+        maxRows: 10,
+      })
+    ).rejects.toThrow('ORA-00942');
+    expect(execute).toHaveBeenCalledWith(
+      'SELECT * FROM missing',
+      [],
+      expect.objectContaining({ maxRows: 10 })
+    );
+    expect(close).toHaveBeenCalledOnce();
   });
 });

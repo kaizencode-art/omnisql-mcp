@@ -59,6 +59,9 @@ export function resolveOracleConnectOptions(
   }
 
   if (connectionType === 'TNS') {
+    if (connection.sshTunnel?.enabled) {
+      throw new Error('Oracle TNS aliases cannot be combined with an SSH tunnel');
+    }
     const configDir = props['@dbeaver-tns-path@'] || process.env.TNS_ADMIN;
     if (!configDir) {
       throw new Error(
@@ -160,4 +163,15 @@ export function oracleFetchTypeHandler(
 /** Statement id for EXPLAIN PLAN, so concurrent plans in PLAN_TABLE stay apart. */
 export function explainStatementId(): string {
   return `omnisql_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Remove client delimiters from SQL while preserving PL/SQL block terminators. */
+export function normalizeOracleStatement(query: string): string {
+  const statement = query
+    .trim()
+    .replace(/\n\s*\/\s*$/, '')
+    .trimEnd();
+  const plsql =
+    /^(?:begin|declare|create\s+(?:or\s+replace\s+)?(?:procedure|function|trigger|package|type))\b/i;
+  return plsql.test(statement) ? statement : statement.replace(/;\s*$/, '');
 }

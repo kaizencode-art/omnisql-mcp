@@ -30,6 +30,7 @@ import {
   resolveOracleConnectOptions,
   oracleFetchTypeHandler,
   explainStatementId,
+  normalizeOracleStatement,
 } from './oracle.js';
 
 export class WorkspaceClient {
@@ -666,9 +667,7 @@ export class WorkspaceClient {
     maxRows?: number
   ): Promise<QueryResult> {
     return this.withOracleConnection(connection, async (conn) => {
-      // Oracle accepts one statement per call, so a trailing `; DROP ...` is
-      // rejected by the server (ORA-03405) rather than executed.
-      const res = await conn.execute<unknown[]>(query, [], {
+      const res = await conn.execute<unknown[]>(normalizeOracleStatement(query), [], {
         outFormat: oracledb.OUT_FORMAT_ARRAY,
         autoCommit: true,
         maxRows: maxRows ?? 0,
@@ -694,7 +693,9 @@ export class WorkspaceClient {
     return this.withOracleConnection(connection, async (conn) => {
       const statementId = explainStatementId();
       try {
-        await conn.execute(`EXPLAIN PLAN SET STATEMENT_ID = '${statementId}' FOR ${query}`);
+        await conn.execute(
+          `EXPLAIN PLAN SET STATEMENT_ID = '${statementId}' FOR ${normalizeOracleStatement(query)}`
+        );
         const res = await conn.execute<unknown[]>(
           `SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY('PLAN_TABLE', :id, 'TYPICAL'))`,
           { id: statementId },
@@ -835,6 +836,7 @@ export class WorkspaceClient {
             case 'nullable':
               columnInfo.nullable = value === 'YES' || value === 'Y' || value === true;
               break;
+            case 'data_default':
             case 'column_default':
             case 'default':
               columnInfo.defaultValue = value;
@@ -846,14 +848,17 @@ export class WorkspaceClient {
             case 'extra':
               columnInfo.isAutoIncrement = value && value.toLowerCase().includes('auto_increment');
               break;
+            case 'data_length':
             case 'character_maximum_length':
             case 'length':
               columnInfo.length = parseInt(value) || undefined;
               break;
+            case 'data_precision':
             case 'numeric_precision':
             case 'precision':
               columnInfo.precision = parseInt(value) || undefined;
               break;
+            case 'data_scale':
             case 'numeric_scale':
             case 'scale':
               columnInfo.scale = parseInt(value) || undefined;
@@ -919,7 +924,7 @@ export class WorkspaceClient {
       return result.rows.map((row) => {
         const tableObj: any = {};
         result.columns.forEach((col, idx) => {
-          tableObj[col] = row[idx];
+          tableObj[col.toLowerCase()] = row[idx];
         });
         return tableObj;
       });
